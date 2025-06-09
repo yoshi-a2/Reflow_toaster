@@ -19,6 +19,15 @@ unsigned long time_start_to_now = 0;
 unsigned long second = 0;
 unsigned long time_remaining = 0;
 int l = 0;
+double data; //グラフプロット時に使用
+int plot_X;
+int plot_Y;
+int check_reflow_start = 0;
+
+
+
+double plot[250];
+int num_loop = 0; //core0のloopが回った回数を数える
 
 
 #define sound 0 //ボタンタッチ音
@@ -448,12 +457,30 @@ int page_11(){
   drawText(232, 30, "Waiting", &FreeSans9pt7b, ILI9341_WHITE);
 
 
-  // 平行線，垂直(x始点，y始点，長さ)
+  // 平行線
   canvas.drawFastHLine(0, 46, 320, ILI9341_WHITE);
 
   //グラフ軸
-  canvas.drawFastHLine(10, 230, 210, ILI9341_WHITE);     //横軸
-  canvas.drawFastVLine(10, 0, 230, ILI9341_WHITE);     //縦軸
+  canvas.drawFastHLine(10, 230, 315, ILI9341_WHITE);     //横軸
+  canvas.drawFastVLine(10, 10, 220, ILI9341_WHITE);     //縦軸
+
+  //グラフ目盛
+  canvas.drawFastHLine(8, 220, 5, ILI9341_WHITE);
+  
+  //drawText(0, 210, "30", &FreeSans9pt7b, ILI9341_WHITE);
+  canvas.drawFastHLine(8, 210, 5, ILI9341_WHITE);
+  //drawText(0, 200, "40", &FreeSans9pt7b, ILI9341_WHITE);
+  canvas.drawFastHLine(8, 200, 5, ILI9341_WHITE);
+  //drawText(0, 190, "50", &FreeSans9pt7b, ILI9341_WHITE);
+  canvas.drawFastHLine(8, 190, 5, ILI9341_WHITE);
+  //drawText(0, 180, "60", &FreeSans9pt7b, ILI9341_WHITE);
+
+  /*
+  canvas.setTextColor(ILI9341_WHITE); 
+  canvas.setTextSize(1); 
+  canvas.setCursor(0, 220);          // 表示座標指定
+  canvas.print("30");  
+  */
 
 
   // Heating-Waitingランプ描画(x, y, 半径, 色)
@@ -463,15 +490,43 @@ int page_11(){
   canvas.fillCircle(210, 22, 18, ILI9341_WHITE);    // 境界線
   updateLamp(); // ボタン点灯状態更新関数呼び出し
 
-  /*
+  // グラフへのプロット
+  if(num_loop != 1 && num_loop % 2 == 1){ //loopをまわした回数 = plot[]の要素数が2の倍数の時
+    for(int a = 0; a <= (num_loop - 3); a += 2){
+      data = (plot[a] + plot[a + 1]) / 2;
+      plot_X = 10 + ((3*a) / 2) + 1;
+      plot_Y = 230 - (data - 20.0 + 0.5);
+
+      canvas.drawFastHLine(plot_X, plot_Y, 1, ILI9341_WHITE);
+    }
+  }
+
+    
+  
+  if(num_loop != 0 && num_loop % 2 == 0){ //loopをまわした回数 = plot[]の要素数が2の倍数じゃない時
+    for(int a = 0; a <= (num_loop - 2); a += 2){
+      data = (plot[a] + plot[a + 1]) / 2;
+      plot_X = 10 + ((3*a) / 2) + 1;
+      plot_Y = 230 - (data - 20.0 + 0.5);
+
+      canvas.drawFastHLine(plot_X, plot_Y, 1, ILI9341_WHITE);
+
+    }
+  }
+
+
+
+
+
+  
   // ボタン描画（左上x, 左上y, wide, high, ラベル, フォント, ボタン色, ラベル色）
-  drawButton(25, 185, 140, 50, "Cancel", &FreeSans18pt7b, ILI9341_ORANGE, ILI9341_WHITE); // page7に戻る
-  */
+  drawButton(25, 100, 140, 50, "Cancel", &FreeSans18pt7b, ILI9341_ORANGE, ILI9341_WHITE); // page7に戻る
+  
 
   //スプライトをディスプレイ表示
   tft.drawRGBBitmap(0, 0, canvas.getBuffer(), TFT_WIDTH, TFT_HEIGHT);
 
-  /*
+  
   if (ts.touched() == true) {  // タッチされていれば
     TS_Point tPoint = ts.getPoint();  // タッチ座標を取得
 
@@ -487,10 +542,10 @@ int page_11(){
 
 
   }
-  */
   
-  delay(5000);
-  page = 7;
+  
+  //delay(3000);
+  //page = 7;
   
 
   return page;
@@ -520,6 +575,8 @@ int Pin_thermistor_num = 0;
 int left = 0;
 int right = 1495; // 要素数-1
 int mid;
+
+
 
 /*
 //↓PID用
@@ -641,7 +698,7 @@ void setup(){
 
 
 void loop(){
-  Pin_thermistor_num = Pin_thermistor; //温度を読みたいサーミスタのピン番号を代入
+  Pin_thermistor_num = Pin_thermistor; //温度を読みたいサーミスタのピン番号を代入，サーミスターを何個か並列使用するときのためにPin_thermistor_numに代入するようにした
   celsius = get_celsius(Pin_thermistor_num);
   smoothed_celsius = get_smoothed_celsius(celsius, smoothed_celsius);
   
@@ -687,8 +744,15 @@ void loop(){
 
   */
 
+  /********************グラフプロット & SD保存用********************/
+  if(check_reflow_start == 1){
+    plot[num_loop] = smoothed_celsius;
+    num_loop++;
+  }
   
 
+
+  Serial.print(num_loop);
   delay(1000);
 }
 
@@ -717,6 +781,7 @@ void setup1(){
 void loop1(){
   switch(page){
     case 1:
+      check_reflow_start = 0;
       page_2(smoothed_celsius);
       break;
     case 2:
@@ -743,6 +808,8 @@ void loop1(){
       for(l; l < 1; l++){
         tone(sound,3000,700);
         time_start = millis();
+        num_loop = 0;
+        check_reflow_start = 1;
       }
       delay(200);
       page_7(smoothed_celsius);
