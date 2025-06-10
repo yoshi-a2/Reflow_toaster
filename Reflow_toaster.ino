@@ -3,12 +3,14 @@
 #include <Adafruit_GFX.h>
 #include <Adafruit_ILI9341.h>
 #include <XPT2046_Touchscreen.h>
+#include <JPEGDecoder.h>
 #include <SPI.h>
 #include <Fonts/FreeSans9pt7b.h>
 #include <Fonts/FreeSans12pt7b.h>
 #include <Fonts/FreeSans18pt7b.h>
 #include <Fonts/FreeSansBold9pt7b.h>
 #include <Fonts/FreeSansBold18pt7b.h>
+#include <Fonts/Tiny3x3a2pt7b.h>
 
 #define TFT_WIDTH 320    //x方向ビット数
 #define TFT_HEIGHT 240   //y方向ビット数
@@ -16,13 +18,14 @@ int page = 2;  //表示ページ
 unsigned long time_start = 0;   //焼き開始時刻
 unsigned long time_now = 0;
 unsigned long time_start_to_now = 0;
-unsigned long second = 0;
 unsigned long time_remaining = 0;
 int l = 0;
 double data; //グラフプロット時に使用
 int plot_X;
 int plot_Y;
 int check_reflow_start = 0;
+
+int triangle_x;
 
 
 
@@ -35,10 +38,10 @@ int num_loop = 0; //core0のloopが回った回数を数える
 #define TFT_CS 22   // CS
 #define TFT_RST 21   // Reset 
 #define TFT_DC 20   // D/ C
-#define TOUCH_MISO 16
+#define TOUCH_SD_MISO 16
 #define TOUCH_CS 17
-#define TFT_TOUCH_MOSI 19   // SDI(MOSI)
-#define TFT_TOUCH_SCK 18   // SCK
+#define TFT_TOUCH_SD_MOSI 19   // SDI(MOSI)
+#define TFT_TOUCH_SD_SCK 18   // SCK
 
 //グラフィックのインスタンス
 Adafruit_ILI9341 tft = Adafruit_ILI9341(&SPI, TFT_DC, TFT_CS, TFT_RST);
@@ -99,6 +102,16 @@ void drawButton(int x, int y, int w, int h, const char* label, const GFXfont* fo
   canvas.setCursor(centeredX, centeredY); // 新しいカーソル位置を設定
   canvas.print(label);                    // テキストを描画
 }
+
+/******************** 進行状況の三角描画関数 ********************/
+void triangle(int triangle_x){
+  canvas.drawFastHLine(triangle_x, 156, 9, ILI9341_WHITE);
+  canvas.drawFastHLine(triangle_x + 1, 157, 7, ILI9341_WHITE);
+  canvas.drawFastHLine(triangle_x + 2, 158, 5, ILI9341_WHITE);
+  canvas.drawFastHLine(triangle_x + 3, 159, 3, ILI9341_WHITE);
+  canvas.drawFastHLine(triangle_x + 4, 160, 1, ILI9341_WHITE);
+}
+
 
 
 /******************** 2ページ目 manual or auto ********************/
@@ -362,20 +375,22 @@ int page_7(double smoothed_celsius){
   time_now = millis();
   
   time_start_to_now = time_now - time_start;
-  time_remaining = 210000 - time_start_to_now;
-
-  second = time_start_to_now / 1000;
+  if(time_start_to_now >= 210000){
+    time_remaining = 0;
+  }
+  else{
+    time_remaining = 210000 - time_start_to_now;
+  }
+  
   canvas.setTextColor(ILI9341_WHITE); 
   canvas.setFont(&FreeSans9pt7b);  // フォント指定
-  canvas.setCursor(3, 155);          // 表示座標指定
-  canvas.print(second);    // 
+  canvas.setCursor(3, 153);          // 表示座標指定
+  canvas.print(time_start_to_now / 1000);    // 
   canvas.print("s");
 
-
-  second = time_remaining / 1000;
   canvas.setFont(&FreeSans9pt7b);  // フォント指定
-  canvas.setCursor(280, 155);          // 表示座標指定
-  canvas.print(second);    // 
+  canvas.setCursor(280, 153);          // 表示座標指定
+  canvas.print(time_remaining / 1000);    // 
   canvas.print("s");
   
 
@@ -391,9 +406,15 @@ int page_7(double smoothed_celsius){
     drawText(130, 130, "Heat up to 235", &FreeSans12pt7b, ILI9341_RED);
   }
   if(210000 < time_start_to_now){
+    check_reflow_start = 0;
+    canvas.fillRect(120, 30, 80, 30, ILI9341_BLACK);
+    ohuro();
+    delay(8000);
     page = 12;
   }
   
+  triangle_x = ((time_start_to_now / 1000) *297 / 210) + 8;
+  triangle(triangle_x);
 
 
   // 平行線(x始点，y始点，長さ)
@@ -403,7 +424,10 @@ int page_7(double smoothed_celsius){
 
   // スライドボリューム描画
   canvas.fillRect(10, 162, 300, 11, ILI9341_WHITE);    // 枠
-  canvas.fillRect(12, 164, 296, 7, ILI9341_BLACK);     // 
+  //canvas.fillRect(12, 164, 296, 7, ILI9341_BLACK);     // 
+  canvas.fillRect(12, 164, 42, 7, ILI9341_YELLOW);
+  canvas.fillRect(54, 164, 127, 7, ILI9341_ORANGE);
+  canvas.fillRect(181, 164, 127, 7, ILI9341_RED);
   //canvas.fillRect(270, slideYValue, 45, 20, 0x0904);   // ボリュームつまみ
   //canvas.fillRect(278, slideYValue + 8, 29, 3, ILI9341_RED);  // ボリュームつまみライン
 
@@ -446,6 +470,7 @@ int page_7(double smoothed_celsius){
   }
 
 
+
   return page;
 }
 
@@ -453,51 +478,61 @@ int page_7(double smoothed_celsius){
 /******************** 11ページ目 グラフ ********************/
 int page_11(){
   canvas.fillScreen(ILI9341_BLACK);   //背景色リセット
-  drawText(92, 30, "Heating", &FreeSans9pt7b, ILI9341_WHITE);
-  drawText(232, 30, "Waiting", &FreeSans9pt7b, ILI9341_WHITE);
-
-
-  // 平行線
-  canvas.drawFastHLine(0, 46, 320, ILI9341_WHITE);
 
   //グラフ軸
-  canvas.drawFastHLine(10, 230, 315, ILI9341_WHITE);     //横軸
-  canvas.drawFastVLine(10, 10, 220, ILI9341_WHITE);     //縦軸
+  canvas.drawFastHLine(5, 230, 315, ILI9341_WHITE);     //横軸
+  canvas.drawFastVLine(5, 10, 220, ILI9341_WHITE);     //縦軸
 
   //グラフ目盛
-  canvas.drawFastHLine(8, 220, 5, ILI9341_WHITE);
-  
-  //drawText(0, 210, "30", &FreeSans9pt7b, ILI9341_WHITE);
-  canvas.drawFastHLine(8, 210, 5, ILI9341_WHITE);
-  //drawText(0, 200, "40", &FreeSans9pt7b, ILI9341_WHITE);
-  canvas.drawFastHLine(8, 200, 5, ILI9341_WHITE);
-  //drawText(0, 190, "50", &FreeSans9pt7b, ILI9341_WHITE);
-  canvas.drawFastHLine(8, 190, 5, ILI9341_WHITE);
-  //drawText(0, 180, "60", &FreeSans9pt7b, ILI9341_WHITE);
+  //縦軸
+  canvas.drawFastHLine(4, 220, 3, ILI9341_WHITE);   //30
+  canvas.drawFastHLine(4, 210, 3, ILI9341_WHITE);   //40
+  canvas.drawFastHLine(3, 200, 5, ILI9341_WHITE);   //50
+  drawText(8, 205, "50", &FreeSans9pt7b, ILI9341_WHITE);
+  canvas.drawFastHLine(4, 190, 3, ILI9341_WHITE);   //60
+  canvas.drawFastHLine(4, 180, 3, ILI9341_WHITE);    //70
+  canvas.drawFastHLine(4, 170, 3, ILI9341_WHITE);   //80
+  canvas.drawFastHLine(4, 160, 3, ILI9341_WHITE);   //90
+  canvas.drawFastHLine(3, 150, 5, ILI9341_WHITE);   //100
+  drawText(8, 155, "100", &FreeSans9pt7b, ILI9341_WHITE);
+  canvas.drawFastHLine(4, 140, 3, ILI9341_WHITE);   //110
+  canvas.drawFastHLine(4, 130, 3, ILI9341_WHITE);   //120
+  canvas.drawFastHLine(4, 120, 3, ILI9341_WHITE);   //130
+  canvas.drawFastHLine(4, 110, 3, ILI9341_WHITE);   //140
+  canvas.drawFastHLine(4, 100, 3, ILI9341_WHITE);   //150
+  canvas.drawFastHLine(4, 90, 3, ILI9341_WHITE);    //160
+  canvas.drawFastHLine(4, 80, 3, ILI9341_WHITE);    //170
+  canvas.drawFastHLine(4, 70, 3, ILI9341_WHITE);    //180
+  canvas.drawFastHLine(4, 60, 3, ILI9341_WHITE);    //190
+  canvas.drawFastHLine(3, 50, 5, ILI9341_WHITE);    //200
+  drawText(8, 55, "200", &FreeSans9pt7b, ILI9341_WHITE);
+  canvas.drawFastHLine(4, 40, 3, ILI9341_WHITE);    //210
+  canvas.drawFastHLine(4, 30, 3, ILI9341_WHITE);    //220
+  canvas.drawFastHLine(4, 20, 3, ILI9341_WHITE);    //230
+  canvas.drawFastHLine(4, 10, 3, ILI9341_WHITE);    //240
 
-  /*
-  canvas.setTextColor(ILI9341_WHITE); 
-  canvas.setTextSize(1); 
-  canvas.setCursor(0, 220);          // 表示座標指定
-  canvas.print("30");  
-  */
 
+  //横軸
+  drawText(41, 225, "30", &FreeSans9pt7b, ILI9341_WHITE);
+  canvas.drawFastVLine(50, 228, 5, ILI9341_WHITE);    //30
+  canvas.drawFastVLine(95, 228, 5, ILI9341_WHITE);    //60
+  canvas.drawFastVLine(140, 228, 5, ILI9341_WHITE);    //90
+  drawText(170, 225, "120", &FreeSans9pt7b, ILI9341_WHITE);
+  canvas.drawFastVLine(185, 228, 5, ILI9341_WHITE);   //120
+  canvas.drawFastVLine(230, 228, 5, ILI9341_WHITE);    //150
+  canvas.drawFastVLine(275, 228, 5, ILI9341_WHITE);    //180
+  drawText(291, 225, "210", &FreeSans9pt7b, ILI9341_WHITE);
+  canvas.drawFastVLine(319, 228, 5, ILI9341_WHITE);
 
-  // Heating-Waitingランプ描画(x, y, 半径, 色)
-  canvas.fillCircle(70, 22, 20, ILI9341_DARKGREY); // 外枠
-  canvas.fillCircle(70, 22, 18, ILI9341_WHITE);    // 境界線
-  canvas.fillCircle(210, 22, 20, ILI9341_DARKGREY); // 外枠
-  canvas.fillCircle(210, 22, 18, ILI9341_WHITE);    // 境界線
-  updateLamp(); // ボタン点灯状態更新関数呼び出し
 
   // グラフへのプロット
   if(num_loop != 1 && num_loop % 2 == 1){ //loopをまわした回数 = plot[]の要素数が2の倍数の時
     for(int a = 0; a <= (num_loop - 3); a += 2){
       data = (plot[a] + plot[a + 1]) / 2;
-      plot_X = 10 + ((3*a) / 2) + 1;
+      plot_X = 5 + ((3*a) / 2) + 1;
       plot_Y = 230 - (data - 20.0 + 0.5);
 
-      canvas.drawFastHLine(plot_X, plot_Y, 1, ILI9341_WHITE);
+      canvas.drawFastHLine(plot_X, plot_Y, 1, ILI9341_ORANGE);
     }
   }
 
@@ -506,10 +541,10 @@ int page_11(){
   if(num_loop != 0 && num_loop % 2 == 0){ //loopをまわした回数 = plot[]の要素数が2の倍数じゃない時
     for(int a = 0; a <= (num_loop - 2); a += 2){
       data = (plot[a] + plot[a + 1]) / 2;
-      plot_X = 10 + ((3*a) / 2) + 1;
+      plot_X = 5 + ((3*a) / 2) + 1;
       plot_Y = 230 - (data - 20.0 + 0.5);
 
-      canvas.drawFastHLine(plot_X, plot_Y, 1, ILI9341_WHITE);
+      canvas.drawFastHLine(plot_X, plot_Y, 1, ILI9341_ORANGE);
 
     }
   }
@@ -544,15 +579,59 @@ int page_11(){
   }
   
   
-  //delay(3000);
-  //page = 7;
+
   
 
   return page;
 }
 
 
+/******************** 終了音 ********************************/
+void ohuro(){
+  tone(0, 806.964, 250); //ソ
+  delay(250);
+  tone(0, 718.923, 250);  //ファ
+  delay(250);
+  tone(0, 678.573, 500);  //ミ
+  delay(500);
 
+  tone(0, 806.964, 250); //ソ
+  delay(250);
+  tone(0, 1077.164, 250); //ド
+  delay(250);
+  tone(0, 1016.710, 500); //シ
+  delay(500);
+  
+  tone(0, 806.964, 250);  //ソ
+  delay(250);
+  tone(0, 1209.079, 250); //レ
+  delay(250);
+  tone(0, 1077.164, 500); //ド
+  delay(500);
+  tone(0, 1357.146, 500); //ミ
+  delay(500);
+  delay(500);
+
+  tone(0, 1077.164, 250); //ド
+  delay(250);
+  tone(0, 1016.710, 250); //シ
+  delay(250);
+  tone(0, 905.786, 500); //ラ
+  delay(500);
+
+  tone(0, 1437.846, 250); //ファ
+  delay(250);
+  tone(0, 1209.079, 250); //レ
+  delay(250);
+  tone(0, 1077.167, 500); //ド
+  delay(500);
+  tone(0, 1016.710, 500);  //シ
+  delay(500);
+
+  tone(0, 1077.164, 1000); //ド
+  delay(1000);
+
+}
 
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -764,8 +843,9 @@ void setup1(){
   pinMode(SSR, OUTPUT);
 
   //SPI0
-  SPI.setTX(TFT_TOUCH_MOSI);
-  SPI.setSCK(TFT_TOUCH_SCK);
+  SPI.setTX(TFT_TOUCH_SD_MOSI);
+  SPI.setSCK(TFT_TOUCH_SD_SCK);
+  SPI.setRX(TOUCH_SD_MISO);
 
   //グラフィック設定
   tft.begin();
