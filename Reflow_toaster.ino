@@ -14,22 +14,34 @@
 
 #define TFT_WIDTH 320    //x方向ビット数
 #define TFT_HEIGHT 240   //y方向ビット数
-int page = 2;  //表示ページ
+int page = 1;  //表示ページ
 unsigned long time_start = 0;   //焼き開始時刻
 unsigned long time_now = 0;
+unsigned long time_now_loop = 0;
 unsigned long time_start_to_now = 0;
+unsigned long time_start_to_now_loop = 0;
 unsigned long time_remaining = 0;
-int l = 0;
 double data; //グラフプロット時に使用
 int plot_X;
 int plot_Y;
-int check_reflow_start = 0;
+bool check_reflow_start = false;  //リフローが始まっているか
+bool find_SD = false;   //SDカードが認識されているか
+bool open_SD = false;  //SDカードの書き込みが終わっているか確認
+int no1 = 0; //Emargencyの計算用
+int no2 = 0;
+int no3= 0;
+int no_calc = 0;
 
 int triangle_x;
 
+int l = 0;
+
+//int data_time_start_to_now_loop;
+double data_time_loop;
 
 
 double plot[250];
+double data_time[250];
 int num_loop = 0; //core0のloopが回った回数を数える
 
 
@@ -42,6 +54,9 @@ int num_loop = 0; //core0のloopが回った回数を数える
 #define TOUCH_CS 17
 #define TFT_TOUCH_SD_MOSI 19   // SDI(MOSI)
 #define TFT_TOUCH_SD_SCK 18   // SCK
+#define SD_CS 15
+#define SD_FILENAME "/reflow_tempdata.csv"
+#define JPEG_FILENAME "/TORICA_LOGO.jpg"
 
 //グラフィックのインスタンス
 Adafruit_ILI9341 tft = Adafruit_ILI9341(&SPI, TFT_DC, TFT_CS, TFT_RST);
@@ -49,11 +64,19 @@ Adafruit_ILI9341 tft = Adafruit_ILI9341(&SPI, TFT_DC, TFT_CS, TFT_RST);
 //タッチパネルのインスタンス
 XPT2046_Touchscreen ts(TOUCH_CS);
 
+//SDのインスタンス
+JPEGDecoder jpegDec;
+
+// Fileクラスのインスタンスを宣言
+File myFile;
+
 //スプライト（16bit）
-GFXcanvas16 canvas(TFT_WIDTH, TFT_HEIGHT);
+GFXcanvas16 canvas(TFT_WIDTH, TFT_HEIGHT);    // 通常タッチ画面用
+GFXcanvas16 canvas1(TFT_WIDTH, TFT_HEIGHT);   //通常画像表示用
+
 
 //変数宣言
-bool lampSignal = false;   // ランプ点灯状態格納用
+bool SSR_ON = false;   // ランプ点灯状態格納用
 bool change_page = false;   //ページを変えるスイッチ用
 
 
@@ -65,9 +88,9 @@ void drawText(int16_t x, int16_t y, const char* text, const GFXfont* font, uint1
   canvas.println(text);       // 表示内容
 }
 
-/***************** ランプ点灯状態更新 & SSR制御関数 *****************/
+/***************** manual用　ランプ点灯状態更新 & SSR制御関数 *****************/
 void updateLamp() {
-  if (lampSignal == true) { // ランプ状態点灯なら
+  if (SSR_ON == true) { // ランプ状態点灯なら
     canvas.fillCircle(70, 22, 17, ILI9341_RED);         // Heatimg点灯
     canvas.fillCircle(210, 22, 17, ILI9341_DARKGREY); // Wauting消灯
     digitalWrite(SSR, HIGH);
@@ -78,6 +101,18 @@ void updateLamp() {
     canvas.fillCircle(210, 22, 17, ILI9341_BLUE);    // Waiting点灯
     digitalWrite(SSR, LOW);
 
+  }
+}
+
+/***************** auto用　ランプ点灯状態更新関数 ***********************/
+void auto_updateLamp(){
+  if(SSR_ON == true){
+    canvas.fillCircle(70, 22, 17, ILI9341_RED);         // Heatimg点灯
+    canvas.fillCircle(210, 22, 17, ILI9341_DARKGREY); // Waiting消灯
+  }
+  if(SSR_ON == false){
+    canvas.fillCircle(70, 22, 17, ILI9341_DARKGREY); // Heating消灯
+    canvas.fillCircle(210, 22, 17, ILI9341_BLUE);    // Waiting点灯
   }
 }
 
@@ -112,11 +147,19 @@ void triangle(int triangle_x){
   canvas.drawFastHLine(triangle_x + 4, 160, 1, ILI9341_WHITE);
 }
 
+/******************** 1ページ目 ********************/
+void page_1(){
+  jpegDraw(JPEG_FILENAME);
+  tft.drawRGBBitmap(0, 0, canvas.getBuffer(), TFT_WIDTH, TFT_HEIGHT);
+
+  delay(3000);
+  page = 2;
+}
 
 
 /******************** 2ページ目 manual or auto ********************/
 int page_2(double smoothed_celsius){
-  lampSignal = false;
+  SSR_ON = false;
   updateLamp();
   canvas.fillScreen(ILI9341_BLACK);   //背景色リセット
   drawText(92, 30, "Heating", &FreeSans9pt7b, ILI9341_WHITE);
@@ -143,6 +186,16 @@ int page_2(double smoothed_celsius){
   // ボタン描画（左上x, 左上y, wide, high, ラベル, フォント, ボタン色, ラベル色）
   drawButton(25, 80, 140, 100, "Manual", &FreeSansBold18pt7b, ILI9341_ORANGE, ILI9341_WHITE); // ONボタン
   drawButton(170, 80, 140, 100, "Auto", &FreeSansBold18pt7b, ILI9341_GREEN, ILI9341_WHITE); // OFFボタン
+
+  if (myFile) { // ファイルが開けたら
+    myFile.close(); // ファイルを閉じる
+    drawText(50, 80, "SD card is recognized!!", &FreeSans12pt7b, ILI9341_WHITE);
+    find_SD = true;
+  } else { // ファイルが開けなければ
+    //Serial.println("SDカードが見つかりません");
+    drawText(500, 80, "SD card cannot be recognized...", &FreeSans12pt7b, ILI9341_WHITE);
+    find_SD = false;
+  }
 
   //スプライトをディスプレイ表示
   tft.drawRGBBitmap(0, 0, canvas.getBuffer(), TFT_WIDTH, TFT_HEIGHT);
@@ -215,11 +268,11 @@ int page_3(double smoothed_celsius){
 
     // ボタンタッチエリア検出
     if (x >= 25 && x <= 165 && y >= 102 && y <= 187){
-      lampSignal = true;   // 範囲内ならランプ状態を点灯へ
+      SSR_ON = true;   // 範囲内ならランプ状態を点灯へ
       tone(sound,3000,100);
     }
     if (x >= 170 && x <= 310 && y >= 102 && y <= 187) {
-      lampSignal = false; // 範囲内ならランプ状態を消灯へ
+      SSR_ON = false; // 範囲内ならランプ状態を消灯へ
       tone(sound,3000,100);
     }
     if (x >= 60 && x <= 260 && y >= 188 && y <= 233){
@@ -228,13 +281,13 @@ int page_3(double smoothed_celsius){
     }
 
   }
-
+  Serial.println(SSR_ON);
   return page;
 }
 
 /******************** 4ページ目 autoメニュー表示 ********************/
 int page_4(){
-  lampSignal = false;
+  SSR_ON = false;
   canvas.fillScreen(ILI9341_BLACK);   //背景色リセット
   drawText(92, 30, "Heating", &FreeSans9pt7b, ILI9341_WHITE);
   drawText(232, 30, "Waiting", &FreeSans9pt7b, ILI9341_WHITE);
@@ -291,7 +344,7 @@ int page_4(){
 
 /******************** 5ページ目 ********************/
 void page_5(){
-  lampSignal = false;
+  SSR_ON = false;
   canvas.fillScreen(ILI9341_BLACK);   //背景色リセット
  
     
@@ -299,7 +352,7 @@ void page_5(){
 
 /******************** 6ページ目 autoリフロースタート最終確認 ********************/
 int page_6(double smoothed_celsius){
-  lampSignal = false;
+  SSR_ON = false;
   canvas.fillScreen(ILI9341_BLACK);   //背景色リセット
   drawText(92, 30, "Heating", &FreeSans9pt7b, ILI9341_WHITE);
   drawText(232, 30, "Waiting", &FreeSans9pt7b, ILI9341_WHITE);
@@ -406,8 +459,11 @@ int page_7(double smoothed_celsius){
     drawText(130, 130, "Heat up to 235", &FreeSans12pt7b, ILI9341_RED);
   }
   if(210000 < time_start_to_now){
-    check_reflow_start = 0;
-    canvas.fillRect(120, 30, 80, 30, ILI9341_BLACK);
+    check_reflow_start = false;
+    canvas.fillRect(120, 30, 80, 30, ILI9341_BLACK);    //温度の表示を黒塗りで隠したい
+    if(find_SD = true){
+      writeSdData(data_time, plot);
+    }
     ohuro();
     delay(8000);
     page = 12;
@@ -424,23 +480,16 @@ int page_7(double smoothed_celsius){
 
   // スライドボリューム描画
   canvas.fillRect(10, 162, 300, 11, ILI9341_WHITE);    // 枠
-  //canvas.fillRect(12, 164, 296, 7, ILI9341_BLACK);     // 
   canvas.fillRect(12, 164, 42, 7, ILI9341_YELLOW);
   canvas.fillRect(54, 164, 127, 7, ILI9341_ORANGE);
   canvas.fillRect(181, 164, 127, 7, ILI9341_RED);
-  //canvas.fillRect(270, slideYValue, 45, 20, 0x0904);   // ボリュームつまみ
-  //canvas.fillRect(278, slideYValue + 8, 29, 3, ILI9341_RED);  // ボリュームつまみライン
-
-
-
 
   // Heating-Waitingランプ描画(x, y, 半径, 色)
   canvas.fillCircle(70, 22, 20, ILI9341_DARKGREY); // 外枠
   canvas.fillCircle(70, 22, 18, ILI9341_WHITE);    // 境界線
   canvas.fillCircle(210, 22, 20, ILI9341_DARKGREY); // 外枠
   canvas.fillCircle(210, 22, 18, ILI9341_WHITE);    // 境界線
-  updateLamp(); // ボタン点灯状態更新関数呼び出し
-
+  auto_updateLamp(); // ボタン点灯状態更新関数呼び出し
 
   // ボタン描画（左上x, 左上y, wide, high, ラベル, フォント, ボタン色, ラベル色）
   drawButton(25, 185, 140, 50, "Graph", &FreeSans18pt7b, ILI9341_ORANGE, ILI9341_WHITE); // OFFボタン
@@ -463,7 +512,7 @@ int page_7(double smoothed_celsius){
       tone(sound,3000,100);
     }
     if (x >= 170 && x <= 310 && y >= 185 && y <= 235){
-      page = 2; // 範囲内ならpage8 
+      page = 2; // 範囲内ならpage8 Emargency
       tone(sound,3000,100);
     }
 
@@ -473,6 +522,79 @@ int page_7(double smoothed_celsius){
 
   return page;
 }
+
+
+/******************** 8ページ目　**************************/
+int page_8(){
+  canvas.fillScreen(ILI9341_BLACK);   //背景色リセット
+  
+  drawText(92, 30, "Heating", &FreeSans9pt7b, ILI9341_WHITE);
+  drawText(232, 30, "Waiting", &FreeSans9pt7b, ILI9341_WHITE);
+
+  // 平行線(x始点，y始点，長さ)
+  canvas.drawFastHLine(0, 46, 320, ILI9341_WHITE);
+
+  // Heating-Waitingランプ描画(x, y, 半径, 色)
+  canvas.fillCircle(70, 22, 20, ILI9341_DARKGREY); // 外枠
+  canvas.fillCircle(70, 22, 18, ILI9341_WHITE);    // 境界線
+  canvas.fillCircle(210, 22, 20, ILI9341_DARKGREY); // 外枠
+  canvas.fillCircle(210, 22, 18, ILI9341_WHITE);    // 境界線
+  updateLamp(); // ボタン点灯状態更新関数呼び出し
+
+
+
+  // ボタン描画（左上x, 左上y, wide, high, ラベル, フォント, ボタン色, ラベル色）
+  drawButton(60, 150, 200, 50, "Cancel", &FreeSans18pt7b, ILI9341_ORANGE, ILI9341_WHITE); // cancelボタン
+  drawButton(60, 150, 200, 50, " ", &FreeSans9pt7b, ILI9341_BLACK, ILI9341_WHITE); // No.1ボタン
+  drawText(92, 30, "No.1", &FreeSans9pt7b, ILI9341_WHITE);
+  drawButton(60, 150, 200, 50, " ", &FreeSans9pt7b, ILI9341_BLACK, ILI9341_WHITE); // No.2ボタン
+  drawText(92, 30, "No.2", &FreeSans9pt7b, ILI9341_WHITE);
+  drawButton(60, 150, 200, 50, " ", &FreeSans9pt7b, ILI9341_BLACK, ILI9341_WHITE); // No.3ボタン
+  drawText(92, 30, "No.3", &FreeSans9pt7b, ILI9341_WHITE);
+
+  if (ts.touched() == true) {  // タッチされていれば
+    TS_Point tPoint = ts.getPoint();  // タッチ座標を取得
+    // タッチx座標をTFT画面の座標に換算
+    int16_t x = (tPoint.x-400) * TFT_WIDTH / (4095-550);  // タッチx座標をTFT画面の座標に換算
+    int16_t y = (tPoint.y-230) * TFT_HEIGHT / (4095-420); // タッチy座標をTFT画面の座標に換算
+
+    // ボタンタッチエリア検出
+    if (x >= 60 && x <= 260 && y >= 150 && y <= 200){
+      page = 7;   // 範囲内ならpage7
+      tone(sound,3000,100);
+    }
+
+    if (x >= 60 && x <= 260 && y >= 150 && y <= 200){
+      no1 = 1;   // 範囲内ならNo.1
+      tone(sound,3000,100);
+      drawButton(60, 150, 200, 50, " ", &FreeSans9pt7b, ILI9341_RED, ILI9341_WHITE);
+    }
+
+    if (x >= 60 && x <= 260 && y >= 150 && y <= 200){
+      no2 = 2;   // 範囲内ならNo.2
+      tone(sound,3000,100);
+      drawButton(60, 150, 200, 50, " ", &FreeSans9pt7b, ILI9341_RED, ILI9341_WHITE);
+    }
+
+    if (x >= 60 && x <= 260 && y >= 150 && y <= 200){
+      no3 = 3;   // 範囲内ならNo.3
+      tone(sound,3000,100);
+      drawButton(60, 150, 200, 50, " ", &FreeSans9pt7b, ILI9341_RED, ILI9341_WHITE);
+    }
+
+  }
+
+  no_calc = (no1 + no2) * no3;
+  if(no_calc = 9)
+
+
+  //スプライトをディスプレイ表示
+  tft.drawRGBBitmap(0, 0, canvas.getBuffer(), TFT_WIDTH, TFT_HEIGHT);
+
+  return page;
+}
+
+
 
 
 /******************** 11ページ目 グラフ ********************/
@@ -532,11 +654,12 @@ int page_11(){
       plot_X = 5 + ((3*a) / 2) + 1;
       plot_Y = 230 - (data - 20.0 + 0.5);
 
-      canvas.drawFastHLine(plot_X, plot_Y, 1, ILI9341_ORANGE);
+      canvas.drawFastHLine(plot_X - 1, plot_Y - 1, 3, ILI9341_ORANGE);
+      canvas.drawFastHLine(plot_X - 1, plot_Y, 3, ILI9341_ORANGE);
+      canvas.drawFastHLine(plot_X - 1, plot_Y + 1, 3, ILI9341_ORANGE);
     }
   }
-
-    
+  
   
   if(num_loop != 0 && num_loop % 2 == 0){ //loopをまわした回数 = plot[]の要素数が2の倍数じゃない時
     for(int a = 0; a <= (num_loop - 2); a += 2){
@@ -544,14 +667,12 @@ int page_11(){
       plot_X = 5 + ((3*a) / 2) + 1;
       plot_Y = 230 - (data - 20.0 + 0.5);
 
-      canvas.drawFastHLine(plot_X, plot_Y, 1, ILI9341_ORANGE);
+      canvas.drawFastHLine(plot_X - 1, plot_Y - 1, 3, ILI9341_ORANGE);
+      canvas.drawFastHLine(plot_X - 1, plot_Y, 3, ILI9341_ORANGE);
+      canvas.drawFastHLine(plot_X - 1, plot_Y + 1, 3, ILI9341_ORANGE);
 
     }
   }
-
-
-
-
 
   
   // ボタン描画（左上x, 左上y, wide, high, ラベル, フォント, ボタン色, ラベル色）
@@ -578,10 +699,43 @@ int page_11(){
 
   }
   
-  
+  return page;
+}
 
+/******************* 12ページ目 リフロー終了画面 ********************/
+int page_12(){
+  canvas.fillScreen(ILI9341_BLACK);   //背景色リセット
   
+  if(open_SD == true){
+    drawText(80, 100, "Data saving...", &FreeSans18pt7b, ILI9341_WHITE);
+    drawText(120, 50, "Don't turn off the power yet!!", &FreeSans18pt7b, ILI9341_WHITE);
+  }
+  else{
+    drawText(92, 30, "Reflow is finished!!", &FreeSans12pt7b, ILI9341_WHITE);
+    drawText(92, 30, "Temp data is saved to SD card.", &FreeSans12pt7b, ILI9341_WHITE);
 
+    // ボタン描画（左上x, 左上y, wide, high, ラベル, フォント, ボタン色, ラベル色）
+    drawButton(60, 150, 200, 50, "Main Menu", &FreeSans18pt7b, ILI9341_ORANGE, ILI9341_WHITE); // canselボタン
+
+    if (ts.touched() == true) {  // タッチされていれば
+      TS_Point tPoint = ts.getPoint();  // タッチ座標を取得
+
+      // タッチx座標をTFT画面の座標に換算
+      int16_t x = (tPoint.x-400) * TFT_WIDTH / (4095-550);  // タッチx座標をTFT画面の座標に換算
+      int16_t y = (tPoint.y-230) * TFT_HEIGHT / (4095-420); // タッチy座標をTFT画面の座標に換算
+
+      // ボタンタッチエリア検出
+      if (x >= 60 && x <= 260 && y >= 150 && y <= 200){
+        page = 2;   // 範囲内ならpage11 グラフ
+        tone(sound,3000,100);
+      }
+
+    }
+
+  }
+
+  //スプライトをディスプレイ表示
+  tft.drawRGBBitmap(0, 0, canvas.getBuffer(), TFT_WIDTH, TFT_HEIGHT);
   return page;
 }
 
@@ -632,6 +786,55 @@ void ohuro(){
   delay(1000);
 
 }
+
+
+
+/****************** SDカード書き込み **************************/
+void writeSdData(double data_time[], double plot[]) {
+  myFile = SD.open(SD_FILENAME, FILE_WRITE); // SDカードのファイルを開く
+  
+  // データ書き込み
+  if (myFile) { // ファイルが開けたら
+    open_SD = true;
+    for(int d = 0; d <= num_loop; d++)
+      myFile.printf("%f,%f\n", data_time[d], plot[d]); // テキストと整数データを書き込み
+    myFile.close(); // ファイルを閉じる
+    open_SD = false;
+  } else { // ファイルが開けなければ
+    Serial.println("ファイルを開けませんでした");
+    
+  }
+}
+
+
+/********************* JPEG表示 *************************/
+void jpegDraw(const char* filename) {
+  JpegDec.decodeSdFile(filename); // JPEGファイルをSDカードからデコード実行
+  
+  // シリアル出力、デコード画像情報(MCU [Minimum Coded Unit]：JPEG画像データの最小処理単位
+  Serial.printf("Size : %d x %d\nMCU : %d x %d\n", JpegDec.width, JpegDec.height, JpegDec.MCUWidth, JpegDec.MCUHeight);
+  Serial.printf("Components: %d\nMCU / row: %d\nMCU / col: %d\nScan type: %d\n\n", JpegDec.comps, JpegDec.MCUSPerRow, JpegDec.MCUSPerCol, JpegDec.scanType);  
+
+  uint16_t *pImg;   // ピクセルデータ用のポインタ
+  while (JpegDec.read()) {  // JPEGデータを読み込む
+    pImg = JpegDec.pImage;  // 現在のピクセルデータのポインタを取得
+    for (int h = 0; h < JpegDec.MCUHeight; h++) { // MCU高さ分ループ
+      for (int w = 0; w < JpegDec.MCUWidth; w++) {  // MCU幅分ループ
+        // 現在のピクセルのx, y座標を計算
+        int x = JpegDec.MCUx * JpegDec.MCUWidth + w;  // x座標
+        int y = JpegDec.MCUy * JpegDec.MCUHeight + h; // y座標
+        if (x < JpegDec.width && y < JpegDec.height) {  // ピクセルが画像範囲内なら
+            canvas.drawRGBBitmap(x, y, pImg, 1, 1); // 液晶画面にピクセルを描画
+        }
+        pImg += JpegDec.comps;  // ポインタを次のピクセルデータへ進める
+      }
+    }
+  }
+
+}
+
+
+
 
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -747,6 +950,17 @@ float get_smoothed_celsius(float celsius, float smoothed_celsius){
 
 
 
+/********************* ただの制御 ******************/
+//void control_SSR(){
+
+
+
+
+
+//}
+
+
+
 //PWM制御
 /*
 float get_PWM_OUT_V(float smoothed_celsius){
@@ -773,6 +987,7 @@ void setup(){
   analogReadResolution(12);
   Serial.begin(115200);
   pinMode(Pin_thermistor, INPUT);
+  pinMode(SSR, OUTPUT);
 }
 
 
@@ -781,14 +996,18 @@ void loop(){
   celsius = get_celsius(Pin_thermistor_num);
   smoothed_celsius = get_smoothed_celsius(celsius, smoothed_celsius);
   
+
+
+
+
   //PWM_OUT_V = get_PWM_OUT_V(smoothed_celsius);
 
   //Serial.print("直温度:");
   //Serial.println(celsius);
   //Serial.print(", ");
-  Serial.print("平滑温度：");
-  Serial.print(smoothed_celsius); // 平滑化された温度の出力
-  Serial.println("℃, ");
+  //Serial.print("平滑温度：");
+  //Serial.print(smoothed_celsius); // 平滑化された温度の出力
+  //Serial.print("℃, ");
   //Serial.print("PWM出力電圧:");
   //Serial.print(PWM_OUT_V);
   //Serial.println("V");
@@ -824,14 +1043,19 @@ void loop(){
   */
 
   /********************グラフプロット & SD保存用********************/
-  if(check_reflow_start == 1){
+  if(check_reflow_start == true){
+    time_now_loop = millis();
+    time_start_to_now_loop = time_now_loop - time_start;
+    data_time_loop = time_start_to_now_loop / 1000;
+    data_time[num_loop] = data_time_loop;
     plot[num_loop] = smoothed_celsius;
-    num_loop++;
+    
   }
-  
 
-
-  Serial.print(num_loop);
+  num_loop++;
+  //Serial.print(time_start_to_now_loop);
+  //Serial.print(", ");
+  //Serial.print(data_time_loop);
   delay(1000);
 }
 
@@ -850,19 +1074,32 @@ void setup1(){
   //グラフィック設定
   tft.begin();
   tft.setRotation(3);                         //画面回転（0~3）
-  tft.fillScreen(ILI9341_BLACK);   //背景色リセット
-  canvas.setTextSize(1);                      //テキストサイズ
+  canvas.fillScreen(ILI9341_BLACK);   //背景色リセット
+  canvas1.fillScreen(ILI9341_BLACK);
+  tft.setTextSize(1);                      //テキストサイズ
 
   //タッチパネル設定
   ts.begin();                   // タッチパネル初期化
   ts.setRotation(1); // タッチパネルの回転(画面回転が3ならここは1)
+
+  // SDカードの初期化
+  if (!SD.begin(SD_CS)) {
+    Serial.println("SDカードの初期化に失敗しました");
+    drawText(50, 50, "SD card not found!", &FreeSans12pt7b, ILI9341_RED);
+    return;
+  } else {
+    Serial.println("SDカードが初期化されました");
+  }
+
+
 }
 
 void loop1(){
   switch(page){
     case 1:
-      check_reflow_start = 0;
-      page_2(smoothed_celsius);
+      check_reflow_start = false;
+      SSR_ON = false;
+      page_1();
       break;
     case 2:
       page_2(smoothed_celsius);
@@ -882,14 +1119,13 @@ void loop1(){
     case 6:
       delay(200);
       page_6(smoothed_celsius);
-
       break;
     case 7:
       for(l; l < 1; l++){
         tone(sound,3000,700);
         time_start = millis();
         num_loop = 0;
-        check_reflow_start = 1;
+        check_reflow_start = true;
       }
       delay(200);
       page_7(smoothed_celsius);
@@ -913,11 +1149,12 @@ void loop1(){
       break;
     case 12:
       delay(200);
-      page_2(smoothed_celsius);
+      page_12();
       break;
 
     default:
       Serial.print("Page number error!!");
+      page = 2;
       break;
 
   }
