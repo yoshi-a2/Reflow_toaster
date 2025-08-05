@@ -1,4 +1,5 @@
 #define SSR 28
+#define LED 25
 
 #include <Adafruit_GFX.h>
 #include <Adafruit_ILI9341.h>
@@ -32,16 +33,17 @@ int no2 = 0;
 int no3= 0;
 int no_calc = 0;
 
-int triangle_x;
+int triangle_x;   //リフロー中の現在位置を示す移動する三角形
 
 int l = 0;
+int Refresh_SD;
 
-//int data_time_start_to_now_loop;
-double data_time_loop;
+//int SD_time_start_to_now_loop;
+double SD_time_loop;
 
 
-double plot[250];
-double data_time[250];
+double plot[900];
+double SD_time[900];
 int num_loop = 0; //core0のloopが回った回数を数える
 
 
@@ -55,7 +57,7 @@ int num_loop = 0; //core0のloopが回った回数を数える
 #define TFT_TOUCH_SD_MOSI 19   // SDI(MOSI)
 #define TFT_TOUCH_SD_SCK 18   // SCK
 #define SD_CS 15
-#define SD_FILENAME "/reflow_tempdata.csv"
+#define SD_FILENAME "/Reflow_Tempdata.csv"
 #define JPEG_FILENAME "/TORICA_LOGO.jpg"
 
 //グラフィックのインスタンス
@@ -187,15 +189,6 @@ int page_2(double smoothed_celsius){
   drawButton(25, 80, 140, 100, "Manual", &FreeSansBold18pt7b, ILI9341_ORANGE, ILI9341_WHITE); // ONボタン
   drawButton(170, 80, 140, 100, "Auto", &FreeSansBold18pt7b, ILI9341_GREEN, ILI9341_WHITE); // OFFボタン
 
-  if (myFile) { // ファイルが開けたら
-    myFile.close(); // ファイルを閉じる
-    drawText(50, 80, "SD card is recognized!!", &FreeSans12pt7b, ILI9341_WHITE);
-    find_SD = true;
-  } else { // ファイルが開けなければ
-    //Serial.println("SDカードが見つかりません");
-    drawText(500, 80, "SD card cannot be recognized...", &FreeSans12pt7b, ILI9341_WHITE);
-    find_SD = false;
-  }
 
   //スプライトをディスプレイ表示
   tft.drawRGBBitmap(0, 0, canvas.getBuffer(), TFT_WIDTH, TFT_HEIGHT);
@@ -212,6 +205,7 @@ int page_2(double smoothed_celsius){
     if (x >= 25 && x <= 165 && y >= 80 && y <= 180){
       tone(sound,3000,100);
       page = 3;
+      l = 0;
     }    // 範囲内ならmanualに
     if (x >= 170 && x <= 310 && y >= 80 && y <= 180){
       tone(sound,3000,100);
@@ -253,7 +247,7 @@ int page_3(double smoothed_celsius){
   // ボタン描画（左上x, 左上y, wide, high, ラベル, フォント, ボタン色, ラベル色）
   drawButton(25, 102, 140, 85, "ON", &FreeSansBold18pt7b, ILI9341_RED, ILI9341_WHITE); // OFFボタン
   drawButton(170, 102, 140, 85, "OFF", &FreeSansBold18pt7b, ILI9341_BLUE, ILI9341_WHITE); // ONボタン
-  drawButton(60, 188, 200, 45, "Main Menu", &FreeSans18pt7b, ILI9341_ORANGE, ILI9341_WHITE); // cancelボタン
+  drawButton(60, 188, 200, 45, "Finish", &FreeSans18pt7b, ILI9341_ORANGE, ILI9341_WHITE); // SD保存ボタン
 
   //スプライトをディスプレイ表示
   tft.drawRGBBitmap(0, 0, canvas.getBuffer(), TFT_WIDTH, TFT_HEIGHT);
@@ -276,12 +270,14 @@ int page_3(double smoothed_celsius){
       tone(sound,3000,100);
     }
     if (x >= 60 && x <= 260 && y >= 188 && y <= 233){
-      page = 2; // 範囲内ならpage2へ
+      page = 13; // 範囲内ならpage13へ
+      Refresh_SD = 0;
+      SSR_ON = false;
+      check_reflow_start = false;
       tone(sound,3000,100);
     }
 
   }
-  Serial.println(SSR_ON);
   return page;
 }
 
@@ -462,7 +458,7 @@ int page_7(double smoothed_celsius){
     check_reflow_start = false;
     canvas.fillRect(120, 30, 80, 30, ILI9341_BLACK);    //温度の表示を黒塗りで隠したい
     if(find_SD = true){
-      writeSdData(data_time, plot);
+      writeSdData(SD_time, plot);
     }
     ohuro();
     delay(8000);
@@ -702,20 +698,21 @@ int page_11(){
   return page;
 }
 
-/******************* 12ページ目 リフロー終了画面 ********************/
+/******************* 12ページ目 autoリフロー終了画面 ********************/
 int page_12(){
   canvas.fillScreen(ILI9341_BLACK);   //背景色リセット
   
   if(open_SD == true){
-    drawText(80, 100, "Data saving...", &FreeSans18pt7b, ILI9341_WHITE);
-    drawText(120, 50, "Don't turn off the power yet!!", &FreeSans18pt7b, ILI9341_WHITE);
+    drawText(20, 40, "Data saving...", &FreeSans18pt7b, ILI9341_WHITE);
+    drawText(20, 90, "Don't turn off the power yet!!", &FreeSans18pt7b, ILI9341_WHITE);
   }
   else{
-    drawText(92, 30, "Reflow is finished!!", &FreeSans12pt7b, ILI9341_WHITE);
-    drawText(92, 30, "Temp data is saved to SD card.", &FreeSans12pt7b, ILI9341_WHITE);
+    drawText(20, 40, "Reflow is finished!!", &FreeSans12pt7b, ILI9341_WHITE);
+    drawText(20, 90, "Check if data is saved on the SD card!", &FreeSans12pt7b, ILI9341_WHITE);
 
     // ボタン描画（左上x, 左上y, wide, high, ラベル, フォント, ボタン色, ラベル色）
-    drawButton(60, 150, 200, 50, "Main Menu", &FreeSans18pt7b, ILI9341_ORANGE, ILI9341_WHITE); // canselボタン
+    drawButton(25, 185, 140, 50, "Menu", &FreeSans18pt7b, ILI9341_ORANGE, ILI9341_WHITE); // OFFボタン
+    drawButton(170, 185, 140, 50, "Resave", &FreeSansBold9pt7b, ILI9341_RED, ILI9341_YELLOW); // ONボタン
 
     if (ts.touched() == true) {  // タッチされていれば
       TS_Point tPoint = ts.getPoint();  // タッチ座標を取得
@@ -725,9 +722,15 @@ int page_12(){
       int16_t y = (tPoint.y-230) * TFT_HEIGHT / (4095-420); // タッチy座標をTFT画面の座標に換算
 
       // ボタンタッチエリア検出
-      if (x >= 60 && x <= 260 && y >= 150 && y <= 200){
-        page = 2;   // 範囲内ならpage11 グラフ
+      if (x >= 25 && x <= 165 && y >= 185 && y <= 235){
+        page = 2;   // 範囲内ならpage2
         tone(sound,3000,100);
+      }
+      if (x >= 170 && x <= 310 && y >= 185 && y <= 235){
+        page = 13; // 範囲内ならpage13 もう一度保存しなおす
+        tone(sound,3000,100);
+        Refresh_SD = 0;
+        reinitializeSD();
       }
 
     }
@@ -736,6 +739,94 @@ int page_12(){
 
   //スプライトをディスプレイ表示
   tft.drawRGBBitmap(0, 0, canvas.getBuffer(), TFT_WIDTH, TFT_HEIGHT);
+  return page;
+}
+
+
+/******************* 13ページ目 manualリフロー終了画面 ********************/
+int page_13(){
+  digitalWrite(LED, LOW);
+
+  canvas.fillScreen(ILI9341_BLACK);   //背景色リセット
+
+  // ボタン描画（左上x, 左上y, wide, high, ラベル, フォント, ボタン色, ラベル色）
+  drawButton(25, 102, 140, 85, "Don't Save", &FreeSansBold18pt7b, ILI9341_RED, ILI9341_WHITE); // OFFボタン
+  drawButton(170, 102, 140, 85, "Save", &FreeSansBold18pt7b, ILI9341_BLUE, ILI9341_WHITE); // ONボタン
+
+
+  //スプライトをディスプレイ表示
+  tft.drawRGBBitmap(0, 0, canvas.getBuffer(), TFT_WIDTH, TFT_HEIGHT);
+
+
+  /*
+  if(Refresh_SD == 0){
+    // SDカードの初期化
+    if (!SD.begin(SD_CS)) {
+      Serial.println("SDカードの初期化に失敗しました");
+      drawText(50, 50, "SD card not found!", &FreeSans12pt7b, ILI9341_RED);
+      digitalWrite(LED, LOW);
+      find_SD = false;
+      //return;
+    } else {
+      digitalWrite(LED, HIGH);
+      find_SD = true;
+      Serial.println("SDカードの初期化に成功しました");
+    }
+    Refresh_SD +=1;
+  } 
+  */
+
+  if (!SD.begin(SD_CS)) {
+    Serial.println("SDカードの初期化に失敗しました");
+    drawText(50, 50, "SD card not found!", &FreeSans12pt7b, ILI9341_RED);
+    digitalWrite(LED, LOW);
+    find_SD = false;
+  } else {
+    digitalWrite(LED, HIGH);
+    find_SD = true;
+    Serial.println("SDカードの初期化に成功しました");
+  }
+  
+
+
+  if (ts.touched() == true) {  // タッチされていれば
+    TS_Point tPoint = ts.getPoint();  // タッチ座標を取得
+
+    // タッチx座標をTFT画面の座標に換算
+    int16_t x = (tPoint.x-400) * TFT_WIDTH / (4095-550);  // タッチx座標をTFT画面の座標に換算
+    int16_t y = (tPoint.y-230) * TFT_HEIGHT / (4095-420); // タッチy座標をTFT画面の座標に換算
+
+    // ボタンタッチエリア検出
+    if (x >= 25 && x <= 165 && y >= 102 && y <= 187){
+      page = 2;   // 範囲内なら保存せずpage2へ
+      tone(sound,3000,100);
+    }
+    if (x >= 170 && x <= 310 && y >= 102 && y <= 187) {
+      if(find_SD == true){
+        writeSdData(SD_time, plot);
+        page = 12; // 範囲内なら保存してpage12へ
+      }
+      else{
+        page = 2;
+        Serial.println("SDカードが見つかりませんでした");
+      }
+
+      tone(sound,3000,100);
+    }
+  }
+
+
+  if (!myFile) {
+    Serial.println("ファイルオープンに失敗");
+    if (!SD.begin(SD_CS)) {
+      Serial.println("SDカード再初期化も失敗");
+    } else {
+      Serial.println("再初期化には成功したがファイルオープン失敗");
+    }
+  }
+
+
+  Serial.println(plot[3]);
   return page;
 }
 
@@ -790,14 +881,14 @@ void ohuro(){
 
 
 /****************** SDカード書き込み **************************/
-void writeSdData(double data_time[], double plot[]) {
+void writeSdData(double SD_time[], double plot[]) {
   myFile = SD.open(SD_FILENAME, FILE_WRITE); // SDカードのファイルを開く
   
   // データ書き込み
   if (myFile) { // ファイルが開けたら
     open_SD = true;
     for(int d = 0; d <= num_loop; d++)
-      myFile.printf("%f,%f\n", data_time[d], plot[d]); // テキストと整数データを書き込み
+      myFile.printf("%f,%f\n", SD_time[d], plot[d]); // テキストと整数データを書き込み
     myFile.close(); // ファイルを閉じる
     open_SD = false;
   } else { // ファイルが開けなければ
@@ -833,6 +924,14 @@ void jpegDraw(const char* filename) {
 
 }
 
+/******************* SD再認識のため ********************/
+bool reinitializeSD() {
+  SPI.end();               // SPIを完全に停止
+  delay(100);
+  SPI.begin();             // 再開
+  delay(100);
+  return SD.begin(SD_CS);  // SD再初期化
+}
 
 
 
@@ -933,6 +1032,7 @@ float get_celsius(int Pin_thermistor_num){
   
 
   //平滑化していない温度をリターン
+ 
   
   return temp[num_temp_V];
 
@@ -942,8 +1042,8 @@ float get_celsius(int Pin_thermistor_num){
 //指数移動平均
 float get_smoothed_celsius(float celsius, float smoothed_celsius){
   const float alpha = 0.3; // スムージング係数（0 < α < 1）
-  //Serial.print("前平滑温度:");
-  //Serial.print(smoothed_celsius);
+  Serial.print("前平滑温度:");
+  Serial.println(smoothed_celsius);
   //Serial.print(", ");
   return (alpha * celsius + (1 - alpha) * smoothed_celsius);
 }
@@ -988,6 +1088,7 @@ void setup(){
   Serial.begin(115200);
   pinMode(Pin_thermistor, INPUT);
   pinMode(SSR, OUTPUT);
+  pinMode(LED, OUTPUT);
 }
 
 
@@ -1046,16 +1147,16 @@ void loop(){
   if(check_reflow_start == true){
     time_now_loop = millis();
     time_start_to_now_loop = time_now_loop - time_start;
-    data_time_loop = time_start_to_now_loop / 1000;
-    data_time[num_loop] = data_time_loop;
+    SD_time_loop = time_start_to_now_loop / 1000;
+    SD_time[num_loop] = SD_time_loop;
     plot[num_loop] = smoothed_celsius;
-    
+    num_loop++;
   }
-
-  num_loop++;
+  
   //Serial.print(time_start_to_now_loop);
   //Serial.print(", ");
-  //Serial.print(data_time_loop);
+  //Serial.print(SD_time_loop);
+
   delay(1000);
 }
 
@@ -1065,6 +1166,7 @@ void loop(){
 void setup1(){
   Serial.begin(115200); 
   pinMode(SSR, OUTPUT);
+  pinMode(LED, OUTPUT);
 
   //SPI0
   SPI.setTX(TFT_TOUCH_SD_MOSI);
@@ -1102,9 +1204,17 @@ void loop1(){
       page_1();
       break;
     case 2:
+      delay(200);
+      digitalWrite(LED, LOW);
       page_2(smoothed_celsius);
       break;
     case 3:
+      for(l; l < 1; l++){
+        tone(sound,3000,700);
+        time_start = millis();
+        num_loop = 0;
+        check_reflow_start = true;
+      }
       delay(200);
       page_3(smoothed_celsius);
       break;
@@ -1136,7 +1246,6 @@ void loop1(){
       break;
     case 9:
       delay(200);
-      
       page_2(smoothed_celsius);
       break;
     case 10:
@@ -1151,7 +1260,10 @@ void loop1(){
       delay(200);
       page_12();
       break;
-
+    case 13:
+      delay(200);
+      page_13();
+      break;
     default:
       Serial.print("Page number error!!");
       page = 2;
