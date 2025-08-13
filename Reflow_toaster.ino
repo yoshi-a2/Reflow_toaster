@@ -1,6 +1,19 @@
+//Picoのピン設定
 #define SSR 28
 #define LED 25
+#define TFT_CS 22   // CS
+#define TFT_RST 21   // Reset 
+#define TFT_DC 20   // D/ C
+#define TOUCH_SD_MISO 16
+#define TOUCH_CS 17
+#define TFT_TOUCH_SD_MOSI 19   // SDI(MOSI)
+#define TFT_TOUCH_SD_SCK 18   // SCK
+#define SD_CS 15
+#define sound 0 //ボタンタッチ音
 
+
+
+//ディスプレイの設定
 #include <Adafruit_GFX.h>
 #include <Adafruit_ILI9341.h>
 #include <XPT2046_Touchscreen.h>
@@ -12,74 +25,72 @@
 #include <Fonts/FreeSansBold9pt7b.h>
 #include <Fonts/FreeSansBold18pt7b.h>
 #include <Fonts/Tiny3x3a2pt7b.h>
+#define TFT_WIDTH 320    //Displayのx方向ビット数
+#define TFT_HEIGHT 240   //Displayのy方向ビット数
+#define SD_FILENAME "/Reflow_Tempdata.csv"
+#define JPEG_FILENAME "/TORICA_LOGO.jpg"
 
-#define TFT_WIDTH 320    //x方向ビット数
-#define TFT_HEIGHT 240   //y方向ビット数
+Adafruit_ILI9341 tft = Adafruit_ILI9341(&SPI, TFT_DC, TFT_CS, TFT_RST);   //グラフィックのインスタンス
+XPT2046_Touchscreen ts(TOUCH_CS);   //タッチパネルのインスタンス
+JPEGDecoder jpegDec;    //SDのインスタンス
+File myFile;    // Fileクラスのインスタンスを宣言
+
+GFXcanvas16 canvas(TFT_WIDTH, TFT_HEIGHT);    //スプライト（16bit）通常タッチ画面用
+GFXcanvas16 canvas1(TFT_WIDTH, TFT_HEIGHT);   //スプライト（16bit）通常画像表示用
+
+
+
+//各種計算用変数
 int page = 1;  //表示ページ
-unsigned long time_start = 0;   //焼き開始時刻
-unsigned long time_now = 0;
-unsigned long time_now_loop = 0;
-unsigned long time_start_to_now = 0;
-unsigned long time_start_to_now_loop = 0;
-unsigned long time_remaining = 0;
+unsigned long time_start = 0;   //リフロー開始時刻
+unsigned long time_now = 0;   //autoリフロー中の経過時間・残り時間計算用(ディスプレイ表示用)
+unsigned long time_start_to_now = 0;   //autoリフロー経過時間(ディスプレイ表示用)
+unsigned long time_remaining = 0;   //autoリフロー残り時間(ディスプレイ表示用)
+unsigned long time_now_loop = 0;  //(SD保存・グラフプロット用)
+unsigned long time_start_to_now_loop = 0;   //(SD保存・グラフプロット用)
+double SD_time_loop;    //SD保存用[sec]
+
+int triangle_x;   //リフローの進行状況を示す移動する三角形のx座標
+int l = 0;    //リフロー開始時特有の音を鳴らすため，page3とpage7を何回loopしたかカウント
 double data; //グラフプロット時に使用
 int plot_X;
 int plot_Y;
+int Refresh_SD;
+
+
+
+//bool
 bool check_reflow_start = false;  //リフローが始まっているか
 bool find_SD = false;   //SDカードが認識されているか
 bool open_SD = false;  //SDカードの書き込みが終わっているか確認
+bool SSR_ON = false;   // ランプ点灯状態格納用
+
+
+
+//ディスプレイのタッチ誤認識でautoリフローが止まらないように段階を設ける(「私はロボットではありません」に近いことをしたい)
+//未実装
 int no1 = 0; //Emargencyの計算用
 int no2 = 0;
-int no3= 0;
+int no3 = 0;
 int no_calc = 0;
 
-int triangle_x;   //リフロー中の現在位置を示す移動する三角形
-
-int l = 0;
-int Refresh_SD;
-
-//int SD_time_start_to_now_loop;
-double SD_time_loop;
 
 
+//SD保存用の配列
 double plot[900];
 double SD_time[900];
 int num_loop = 0; //core0のloopが回った回数を数える
 
 
-#define sound 0 //ボタンタッチ音
-
-#define TFT_CS 22   // CS
-#define TFT_RST 21   // Reset 
-#define TFT_DC 20   // D/ C
-#define TOUCH_SD_MISO 16
-#define TOUCH_CS 17
-#define TFT_TOUCH_SD_MOSI 19   // SDI(MOSI)
-#define TFT_TOUCH_SD_SCK 18   // SCK
-#define SD_CS 15
-#define SD_FILENAME "/Reflow_Tempdata.csv"
-#define JPEG_FILENAME "/TORICA_LOGO.jpg"
-
-//グラフィックのインスタンス
-Adafruit_ILI9341 tft = Adafruit_ILI9341(&SPI, TFT_DC, TFT_CS, TFT_RST);
-
-//タッチパネルのインスタンス
-XPT2046_Touchscreen ts(TOUCH_CS);
-
-//SDのインスタンス
-JPEGDecoder jpegDec;
-
-// Fileクラスのインスタンスを宣言
-File myFile;
-
-//スプライト（16bit）
-GFXcanvas16 canvas(TFT_WIDTH, TFT_HEIGHT);    // 通常タッチ画面用
-GFXcanvas16 canvas1(TFT_WIDTH, TFT_HEIGHT);   //通常画像表示用
 
 
-//変数宣言
-bool SSR_ON = false;   // ランプ点灯状態格納用
-bool change_page = false;   //ページを変えるスイッチ用
+
+
+
+
+
+
+
 
 
 /******************** テキスト描画関数 ********************/
@@ -118,7 +129,6 @@ void auto_updateLamp(){
   }
 }
 
-
 /******************** ボタン描画関数 ********************/
 void drawButton(int x, int y, int w, int h, const char* label, const GFXfont* font, uint16_t bgColor, uint16_t labelColor) {
   canvas.fillRect(x, y, w, h, ILI9341_DARKGREY);      // 外枠
@@ -149,7 +159,7 @@ void triangle(int triangle_x){
   canvas.drawFastHLine(triangle_x + 4, 160, 1, ILI9341_WHITE);
 }
 
-/******************** 1ページ目 ********************/
+/******************** 1ページ目 TORICA ********************/
 void page_1(){
   jpegDraw(JPEG_FILENAME);
   tft.drawRGBBitmap(0, 0, canvas.getBuffer(), TFT_WIDTH, TFT_HEIGHT);
@@ -407,7 +417,7 @@ int page_6(double smoothed_celsius){
   return page;
 }
 
-/******************** 7ページ目 リフロー中 ********************/
+/******************** 7ページ目 autoリフロー中 ********************/
 int page_7(double smoothed_celsius){
   canvas.fillScreen(ILI9341_BLACK);   //背景色リセット
   drawText(92, 30, "Heating", &FreeSans9pt7b, ILI9341_WHITE);
@@ -434,12 +444,12 @@ int page_7(double smoothed_celsius){
   canvas.setTextColor(ILI9341_WHITE); 
   canvas.setFont(&FreeSans9pt7b);  // フォント指定
   canvas.setCursor(3, 153);          // 表示座標指定
-  canvas.print(time_start_to_now / 1000);    // 
+  canvas.print(time_start_to_now / 1000);    //リフロー開始からの経過時間 
   canvas.print("s");
 
   canvas.setFont(&FreeSans9pt7b);  // フォント指定
   canvas.setCursor(280, 153);          // 表示座標指定
-  canvas.print(time_remaining / 1000);    // 
+  canvas.print(time_remaining / 1000);    //リフロー終了までの残り時間
   canvas.print("s");
   
 
@@ -831,7 +841,7 @@ int page_13(){
 }
 
 
-/******************** 終了音 ********************************/
+/******************** 焼き終了音 ********************************/
 void ohuro(){
   tone(0, 806.964, 250); //ソ
   delay(250);
@@ -1178,7 +1188,7 @@ void setup1(){
   tft.setRotation(3);                         //画面回転（0~3）
   canvas.fillScreen(ILI9341_BLACK);   //背景色リセット
   canvas1.fillScreen(ILI9341_BLACK);
-  tft.setTextSize(1);                      //テキストサイズ
+  tft.setTextSize(1);                      //デフォテキストサイズ
 
   //タッチパネル設定
   ts.begin();                   // タッチパネル初期化
@@ -1192,8 +1202,6 @@ void setup1(){
   } else {
     Serial.println("SDカードが初期化されました");
   }
-
-
 }
 
 void loop1(){
